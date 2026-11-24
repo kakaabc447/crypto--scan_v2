@@ -151,6 +151,8 @@ if "pending_signal_streak" not in st.session_state:
     st.session_state["pending_signal_streak"] = {}
 if "active_view" not in st.session_state:
     st.session_state["active_view"] = "live"
+if "expander_states" not in st.session_state:
+    st.session_state["expander_states"] = {}
 
 st.sidebar.header("4. 持仓与出单提示")
 direction = st.sidebar.selectbox("持仓方向", ["做多 (Long)", "做空 (Short)"], index=0)
@@ -308,19 +310,19 @@ def _infer_htf_bias(df_htf: pd.DataFrame | None) -> tuple[str, str]:
     e7 = float(df_htf["ema7"].iloc[-1])
     e25 = float(df_htf["ema25"].iloc[-1])
     if c > e25 and e7 >= e25:
-        return ("多头", f"收盘高于 EMA25 且均线偏多")
+        return ("多头", "收盘高于 EMA25 且均线偏多")
     if c < e25 and e7 <= e25:
-        return ("空头", f"收盘低于 EMA25 且均线偏空")
-    return ("震荡/中性", f"价格围绕 EMA25 震荡")
+        return ("空头", "收盘低于 EMA25 且均线偏空")
+    return ("震荡/中性", "价格围绕 EMA25 震荡")
 
 
 def _build_conflict_note(side: str, htf_tf: str, htf_bias: str) -> str:
     """当小周期信号方向与大级别明显相反时输出级别冲突提示。"""
     is_long = side.startswith("做多")
     if is_long and htf_bias == "空头":
-        return f"⚠️ 级别冲突提示：{htf_tf} 为空头倾向，当前做多属于逆大级别短线博弈，注意轻仓与及时推保本/止盈。"
+        return f"⚠️ {htf_tf} 为空头倾向，逆大级别短线博弈，注意轻仓与推保本/止盈"
     if (not is_long) and htf_bias == "多头":
-        return f"⚠️ 级别冲突提示：{htf_tf} 为多头倾向，当前做空属于逆大级别短线博弈，注意轻仓与及时推保本/止盈。"
+        return f"⚠️ {htf_tf} 为多头倾向，逆大级别短线博弈，注意轻仓与推保本/止盈"
     return ""
 
 
@@ -389,17 +391,17 @@ def _rsi_note(side: str, rsi_val: float, use_rsi: bool) -> str:
         return ""
     if side.startswith("做多"):
         if rsi_val >= 72:
-            return f"｜RSI(14)={rsi_val:.1f} 偏高，注意短线冲高回落、别追太高"
+            return f" | RSI(14)={rsi_val:.1f} 偏高，注意短线冲高回落、别追太高"
         if rsi_val <= 35:
-            return f"｜RSI(14)={rsi_val:.1f} 偏低回升，顺势留意企稳"
-        return f"｜RSI(14)={rsi_val:.1f} 处于中性区间"
+            return f" | RSI(14)={rsi_val:.1f} 偏低回升，顺势留意企稳"
+        return f" | RSI(14)={rsi_val:.1f} 中性"
     if side.startswith("做空"):
         if rsi_val <= 28:
-            return f"｜RSI(14)={rsi_val:.1f} 偏低，防短线超跌反弹、别在地板追空"
+            return f" | RSI(14)={rsi_val:.1f} 偏低，防短线超跌反弹、别在地板追空"
         if rsi_val >= 65:
-            return f"｜RSI(14)={rsi_val:.1f} 偏高回落，顺势留意阻力"
-        return f"｜RSI(14)={rsi_val:.1f} 处于中性区间"
-    return f"｜RSI(14)={rsi_val:.1f}"
+            return f" | RSI(14)={rsi_val:.1f} 偏高回落，顺势留意阻力"
+        return f" | RSI(14)={rsi_val:.1f} 中性"
+    return f" | RSI(14)={rsi_val:.1f}"
 
 
 def _build_early_invalid_line(
@@ -421,7 +423,7 @@ def _build_early_invalid_line(
         else:
             inv_p = sl_p + (entry_p - sl_p) * 0.45
             label = "结构过渡位"
-        msg = f"提前预警：若 {coin_short} {tf} 跌破 {_fmt_price(inv_p)}（{label}），多头结构走弱，此策略提前失效（未到硬止损先防）。"
+        msg = f"🛡️ 若 {coin_short} {tf} 跌破 {_fmt_price(inv_p)}（{label}），多头结构走弱，此策略提前失效（未到硬止损先防）。"
         return (inv_p, "below", msg)
     else:
         candidates = [p for p in (ema25_p, recent_high) if entry_p < p < sl_p]
@@ -431,7 +433,7 @@ def _build_early_invalid_line(
         else:
             inv_p = sl_p - (sl_p - entry_p) * 0.45
             label = "结构过渡位"
-        msg = f"提前预警：若 {coin_short} {tf} 站稳 {_fmt_price(inv_p)}（{label}），空头结构走弱，此策略提前失效（未到硬止损先防）。"
+        msg = f"🛡️ 若 {coin_short} {tf} 站稳 {_fmt_price(inv_p)}（{label}），空头结构走弱，此策略提前失效（未到硬止损先防）。"
         return (inv_p, "above", msg)
 
 
@@ -483,7 +485,6 @@ def _evaluate_candidate_strategies(
     pace_ratio, progress = _calc_intraday_pace_ratio(df, tf)
     has_volume_confirm = pace_ratio >= vol_mult
 
-    # 震荡过滤：结合 EMA7/EMA25 间距与近 12 根 K 线高低振幅
     spread_pct = abs(ema7 - ema25) / ema25 * 100 if ema25 else 0.0
     win12 = df.tail(min(len(df), 12))
     range_pct = ((float(win12["high"].max()) - float(win12["low"].min())) / last_p * 100) if last_p else 0.0
@@ -508,10 +509,9 @@ def _evaluate_candidate_strategies(
     cross_up = prev_ema7 <= prev_ema25 and ema7 > ema25
     cross_down = prev_ema7 >= prev_ema25 and ema7 < ema25
 
-    pace_tag = f"折算放量{pace_ratio:.2f}x(进度{int(progress * 100)}%)"
+    pace_tag = f"折算放量{pace_ratio:.2f}x（进度{int(progress * 100)}%)"
     candidates: list[dict] = []
 
-    # 分支 1：扫损假突破反转（刺破近 20 根极值后收回，且带有明显拒绝影线）
     if use_sweep:
         upper_wick = last_h - max(last_o, last_p)
         lower_wick = min(last_o, last_p) - last_l
@@ -519,9 +519,9 @@ def _evaluate_candidate_strategies(
             sweep_sl = max(last_h + atr_val * 0.25, last_p * 1.003)
             candidates.append({
                 "mode": "扫损反转",
-                "side": "做空 (Short)",
+                "side": "做空",
                 "badge": "🧲 扫高反转空",
-                "reason": f"{pace_tag}，刺破前20高点({_fmt_price(prev_high20)})至{_fmt_price(last_h)}后收回，上影拒绝扫损反转。" + _rsi_note("做空 (Short)", rsi_val, use_rsi),
+                "reason": f"{pace_tag}，刺破前20高点({_fmt_price(prev_high20)})至{_fmt_price(last_h)}后收回，上影拒绝扫损反转" + _rsi_note("做空", rsi_val, use_rsi),
                 "entry": last_p,
                 "custom_sl_price": sweep_sl,
                 "tp1_mult": 1.6,
@@ -531,16 +531,15 @@ def _evaluate_candidate_strategies(
             sweep_sl = min(last_l - atr_val * 0.25, last_p * 0.997)
             candidates.append({
                 "mode": "扫损反转",
-                "side": "做多 (Long)",
+                "side": "做多",
                 "badge": "🧲 扫低反转多",
-                "reason": f"{pace_tag}，刺破前20低点({_fmt_price(prev_low20)})至{_fmt_price(last_l)}后收回，下影拒绝扫损反转。" + _rsi_note("做多 (Long)", rsi_val, use_rsi),
+                "reason": f"{pace_tag}，刺破前20低点({_fmt_price(prev_low20)})至{_fmt_price(last_l)}后收回，下影拒绝扫损反转" + _rsi_note("做多", rsi_val, use_rsi),
                 "entry": last_p,
                 "custom_sl_price": sweep_sl,
                 "tp1_mult": 1.6,
                 "tp2_mult": 2.8,
             })
 
-    # 分支 2 & 3：趋势顺势（突破/回踩延续）与快节奏脉冲（需非极度震荡且放量达标）
     if not is_choppy and has_volume_confirm:
         robust_cand: dict | None = None
         fast_cand: dict | None = None
@@ -550,15 +549,15 @@ def _evaluate_candidate_strategies(
             mode_name = "均线回踩顺势" if pullback else "趋势突破顺势"
             badge_name = "🟢 回踩企稳多" if pullback else "🟢 顺势突破多"
             reason = (
-                f"{pace_tag}，EMA7 高于 EMA25 且双均线向上，回踩 EMA7 附近企稳延续。"
+                f"{pace_tag}，EMA7 高于 EMA25 且双均线向上，回踩 EMA7 附近企稳延续"
                 if pullback
-                else f"{pace_tag}，EMA7 高于 EMA25 且双均线向上，顺势突破延续。"
+                else f"{pace_tag}，EMA7 高于 EMA25 且双均线向上，顺势突破延续"
             )
             robust_cand = {
                 "mode": mode_name,
-                "side": "做多 (Long)",
+                "side": "做多",
                 "badge": badge_name,
-                "reason": reason + _rsi_note("做多 (Long)", rsi_val, use_rsi),
+                "reason": reason + _rsi_note("做多", rsi_val, use_rsi),
                 "entry": last_p,
                 "sl_mult": 1.5,
                 "tp1_mult": 2.4,
@@ -569,15 +568,15 @@ def _evaluate_candidate_strategies(
             mode_name = "均线回踩顺势" if rebound else "趋势突破顺势"
             badge_name = "🔴 反弹承压空" if rebound else "🔴 顺势跌破空"
             reason = (
-                f"{pace_tag}，EMA7 低于 EMA25 且双均线向下，反弹靠近 EMA7 受阻延续。"
+                f"{pace_tag}，EMA7 低于 EMA25 且双均线向下，反弹靠近 EMA7 受阻延续"
                 if rebound
-                else f"{pace_tag}，EMA7 低于 EMA25 且双均线向下，顺势跌破延续。"
+                else f"{pace_tag}，EMA7 低于 EMA25 且双均线向下，顺势跌破延续"
             )
             robust_cand = {
                 "mode": mode_name,
-                "side": "做空 (Short)",
+                "side": "做空",
                 "badge": badge_name,
-                "reason": reason + _rsi_note("做空 (Short)", rsi_val, use_rsi),
+                "reason": reason + _rsi_note("做空", rsi_val, use_rsi),
                 "entry": last_p,
                 "sl_mult": 1.5,
                 "tp1_mult": 2.4,
@@ -587,15 +586,15 @@ def _evaluate_candidate_strategies(
         if robust_cand is None:
             if (cross_up and above_ema7_buf) or (ema7_up and above_ema7_buf and last_p > prev_p):
                 reason = (
-                    f"{pace_tag}，EMA7 上穿 EMA25 且拉开 {buf_pct:.2f}% 缓冲，快节奏偏多。"
+                    f"{pace_tag}，EMA7 上穿 EMA25 且拉开 {buf_pct:.2f}% 缓冲，快节奏偏多"
                     if cross_up
-                    else f"{pace_tag}，现价站稳 EMA7 之上（缓冲 {buf_pct:.2f}%）且均线向上，快节奏短多。"
+                    else f"{pace_tag}，现价站稳 EMA7 之上（缓冲 {buf_pct:.2f}%）且均线向上，快节奏短多"
                 )
                 fast_cand = {
                     "mode": "快节奏短线",
-                    "side": "做多 (Long)",
+                    "side": "做多",
                     "badge": "⚡ 快多脉冲",
-                    "reason": reason + _rsi_note("做多 (Long)", rsi_val, use_rsi),
+                    "reason": reason + _rsi_note("做多", rsi_val, use_rsi),
                     "entry": last_p,
                     "sl_mult": 0.9,
                     "tp1_mult": 1.4,
@@ -603,15 +602,15 @@ def _evaluate_candidate_strategies(
                 }
             elif (cross_down and below_ema7_buf) or (ema7_down and below_ema7_buf and last_p < prev_p):
                 reason = (
-                    f"{pace_tag}，EMA7 下穿 EMA25 且拉开 {buf_pct:.2f}% 缓冲，快节奏偏空。"
+                    f"{pace_tag}，EMA7 下穿 EMA25 且拉开 {buf_pct:.2f}% 缓冲，快节奏偏空"
                     if cross_down
-                    else f"{pace_tag}，现价跌破 EMA7 之下（缓冲 {buf_pct:.2f}%）且均线向下，快节奏短空。"
+                    else f"{pace_tag}，现价跌破 EMA7 之下（缓冲 {buf_pct:.2f}%）且均线向下，快节奏短空"
                 )
                 fast_cand = {
                     "mode": "快节奏短线",
-                    "side": "做空 (Short)",
+                    "side": "做空",
                     "badge": "⚡ 快空脉冲",
-                    "reason": reason + _rsi_note("做空 (Short)", rsi_val, use_rsi),
+                    "reason": reason + _rsi_note("做空", rsi_val, use_rsi),
                     "entry": last_p,
                     "sl_mult": 0.9,
                     "tp1_mult": 1.4,
@@ -724,6 +723,7 @@ def _sync_strategy_vault(
 ) -> int:
     """将符合条件且价格不重复的策略锁定快照存入独立策略区与全局历史记录，返回本次新增条数。"""
     items: list[dict] = list(st.session_state["strategy_vault"].get(vault_key, []))
+    exp_map: dict[str, bool] = dict(st.session_state["expander_states"])
     added = 0
 
     for cand in candidates:
@@ -767,11 +767,13 @@ def _sync_strategy_vault(
                 "hit_sl_at": None,
             }
             items.insert(0, snapshot)
+            exp_map[snap_id] = True
             _upsert_global_history(dict(snapshot))
             added += 1
 
     items = items[:max_items]
     st.session_state["strategy_vault"][vault_key] = items
+    st.session_state["expander_states"] = exp_map
     return added
 
 
@@ -805,6 +807,7 @@ def _update_snapshot_hit_times(items: list[dict], last_p: float, tz_offset: int)
 def _delete_snapshot(vault_key: str, snap_id: str) -> None:
     items: list[dict] = list(st.session_state["strategy_vault"].get(vault_key, []))
     st.session_state["strategy_vault"][vault_key] = [x for x in items if x["id"] != snap_id]
+    st.session_state["expander_states"].pop(snap_id, None)
 
 
 def render_history_view() -> None:
@@ -825,26 +828,27 @@ def render_history_view() -> None:
 
     for idx, item in enumerate(hist_items):
         with st.container(border=True):
-            top_1, top_2 = st.columns([3, 1.5])
-            top_1.markdown(
-                f"**#{idx + 1} · {item.get('coin', '')} ({item.get('tf', '')})** — "
-                f"{item.get('badge', '')}（**{item.get('side', '')}**）"
+            st.markdown(
+                f"**{idx + 1} · [{item.get('mode', '')}] {item.get('coin', '')} {item.get('side', '')} "
+                f"@{_fmt_price(float(item.get('entry', 0.0)))}** · {item.get('badge', '')} · "
+                f"`{item.get('created_at', '--')}` · `{item.get('htf_tag', '')}` · `{item.get('ex', '')}`"
             )
-            top_2.caption(f"锁定时间：{item.get('created_at', '--')} · {item.get('ex', '')} · {item.get('htf_tag', '')}")
-
+            st.write(f"**触发依据**：{item.get('reason', '')}")
             if item.get("conflict_text"):
-                st.caption(item["conflict_text"])
-
-            p1, p2, p3, p4 = st.columns(4)
-            p1.write(f"锁定入场：**{_fmt_price(float(item.get('entry', 0.0)))}**")
-            p2.write(f"锁定止损：**{_fmt_price(float(item.get('sl_price', 0.0)))}**")
-            p3.write(f"锁定 TP1：**{_fmt_price(float(item.get('tp1_price', 0.0)))}**")
-            p4.write(f"锁定 TP2：**{_fmt_price(float(item.get('tp2_price', 0.0)))}**")
-
-            t1, t2, t3 = st.columns(3)
-            t1.caption(f"到 TP1 时间：{item.get('hit_tp1_at') or '未到达'}")
-            t2.caption(f"到 TP2 时间：{item.get('hit_tp2_at') or '未到达'}")
-            t3.caption(f"到止损时间：{item.get('hit_sl_at') or '未到达'}")
+                st.write(f"**冲突提示**：{item['conflict_text']}")
+            st.write(
+                f"**关键点位**：入场 `{_fmt_price(float(item.get('entry', 0.0)))}` · "
+                f"止损 `{_fmt_price(float(item.get('sl_price', 0.0)))} (-{float(item.get('sl_pct', 0.0)):.2f}%)` · "
+                f"TP1 `{_fmt_price(float(item.get('tp1_price', 0.0)))} (+{float(item.get('tp1_pct', 0.0)):.2f}%)` · "
+                f"TP2 `{_fmt_price(float(item.get('tp2_price', 0.0)))} (+{float(item.get('tp2_pct', 0.0)):.2f}%)`"
+            )
+            st.write(
+                f"**跟进状态**：到 TP1 {item.get('hit_tp1_at') or '未到达'} · "
+                f"到 TP2 {item.get('hit_tp2_at') or '未到达'} · "
+                f"到止损 {item.get('hit_sl_at') or '未到达'}"
+            )
+            if item.get("invalid_text"):
+                st.write(f"**提前预警**：{item['invalid_text']}")
 
 
 if st.session_state["active_view"] == "history":
@@ -946,7 +950,7 @@ else:
                 if pos_conflict:
                     st.warning(pos_conflict)
 
-            # 独立策略区：多分支 + 级别冲突提示 + 盘中现价 + 时间折算放量 + 突破缓冲 + 两轮确认 + 锁价去重
+            # 独立策略区：折叠卡片排列（新单默认展开，手动收起后保持收起）
             st.divider()
             hdr_l, hdr_r = st.columns([4, 1])
             with hdr_l:
@@ -1003,33 +1007,30 @@ else:
                     "当前处于震荡过滤、折算量能不足、未过突破缓冲或等待连续两轮确认，暂未生成新单据。符合条件且拉开去重间距后会出现在这里。"
                 )
             else:
+                exp_map: dict[str, bool] = st.session_state["expander_states"]
                 for idx, snap in enumerate(vault_items):
-                    with st.container(border=True):
-                        top_a, top_b, top_c = st.columns([2.4, 1.8, 0.9])
-                        top_a.markdown(f"**#{idx + 1} · {snap['mode']}** — {snap['badge']}（**{snap['side']}**）")
-                        top_b.caption(f"锁定时间：{snap['created_at']} · {snap.get('htf_tag', '')}")
-                        if top_c.button(
-                            "删除",
-                            key=f"del_snap_{vault_key}_{snap['id']}",
-                            use_container_width=True,
-                        ):
-                            _delete_snapshot(vault_key, snap["id"])
-                            st.rerun(scope="fragment")
-
-                        st.caption(snap["reason"])
+                    snap_id = snap["id"]
+                    is_exp = bool(exp_map.get(snap_id, True))
+                    header_line = (
+                        f"{idx + 1} · [{snap['mode']}] {snap['coin']} {snap['side']} "
+                        f"@{_fmt_price(float(snap['entry']))} · {snap['badge']} · "
+                        f"`{snap['created_at']}` · `{snap.get('htf_tag', '')}`"
+                    )
+                    with st.expander(header_line, expanded=is_exp):
+                        st.write(f"**触发依据**：{snap['reason']}")
                         if snap.get("conflict_text"):
-                            st.warning(snap["conflict_text"])
-
-                        p1, p2, p3, p4 = st.columns(4)
-                        p1.write(f"锁定入场：**{_fmt_price(snap['entry'])}**")
-                        p2.write(f"锁定止损：**{_fmt_price(snap['sl_price'])}** (-{snap['sl_pct']:.2f}%)")
-                        p3.write(f"锁定 TP1：**{_fmt_price(snap['tp1_price'])}** (+{snap['tp1_pct']:.2f}%)")
-                        p4.write(f"锁定 TP2：**{_fmt_price(snap['tp2_price'])}** (+{snap['tp2_pct']:.2f}%)")
-
-                        t1, t2, t3 = st.columns(3)
-                        t1.caption(f"到 TP1 时间：{snap.get('hit_tp1_at') or '未到达'}")
-                        t2.caption(f"到 TP2 时间：{snap.get('hit_tp2_at') or '未到达'}")
-                        t3.caption(f"到止损时间：{snap.get('hit_sl_at') or '未到达'}")
+                            st.write(f"**冲突提示**：{snap['conflict_text']}")
+                        st.write(
+                            f"**关键点位**：入场 `{_fmt_price(float(snap['entry']))}` · "
+                            f"止损 `{_fmt_price(float(snap['sl_price']))} (-{float(snap['sl_pct']):.2f}%)` · "
+                            f"TP1 `{_fmt_price(float(snap['tp1_price']))} (+{float(snap['tp1_pct']):.2f}%)` · "
+                            f"TP2 `{_fmt_price(float(snap['tp2_price']))} (+{float(snap['tp2_pct']):.2f}%)`"
+                        )
+                        st.write(
+                            f"**跟进状态**：到 TP1 {snap.get('hit_tp1_at') or '未到达'} · "
+                            f"到 TP2 {snap.get('hit_tp2_at') or '未到达'} · "
+                            f"到止损 {snap.get('hit_sl_at') or '未到达'}"
+                        )
 
                         inv_p = float(snap.get("invalid_price", 0.0))
                         inv_dir = snap.get("invalid_dir", "")
@@ -1039,7 +1040,11 @@ else:
                             if triggered:
                                 st.warning(f"🚨 已越过提前失效线（现价 {_fmt_price(last_p)}）—— {inv_text}")
                             else:
-                                st.caption(f"🛡️ {inv_text}")
+                                st.write(f"**提前预警**：{inv_text}")
+
+                        if st.button("删除本条策略", key=f"del_snap_{vault_key}_{snap_id}", use_container_width=True):
+                            _delete_snapshot(vault_key, snap_id)
+                            st.rerun(scope="fragment")
 
             st.divider()
             st.subheader(f"📉 {active_symbol} 价格与均线走势（EMA7 / EMA25）")
